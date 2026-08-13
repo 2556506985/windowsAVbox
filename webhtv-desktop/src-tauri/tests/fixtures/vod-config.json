@@ -1,0 +1,49 @@
+{
+  "spider": "./spider.jar",
+  "home": "demo",
+  "parse": "JSON Parser",
+  "sites": [
+    {
+      "key": "demo",
+      "name": "Demo Site",
+      "type": 3,
+      "api": "csp_Demo",
+      "ext": {
+        "token": "fixture"
+      },
+      "homePage": "./home.html",
+      "searchable": 1,
+      "changeable": 1,
+      "quickSearch": 1,
+      "header": {
+        "User-Agent": "WebHomeTV Desktop Test"
+      },
+      "style": {
+        "type": "rect",
+        "ratio": 1.33
+      }
+    },
+    {
+      "key": "alias",
+      "name": "Alias Home Page",
+      "type": 1,
+      "api": "./api.php",
+      "home_page": "../alias.html",
+      "hide": 0
+    }
+  ],
+  "parses": [
+    {
+      "name": "JSON Parser",
+      "type": "1",
+      "url": "./parse?url=",
+      "ext": {
+        "flag": ["demo"]
+      }
+    }
+  ],
+  "flags": ["demo"],
+  "ads": [],
+  "hlsRules": [],
+  "webHomeExtensions": []
+}

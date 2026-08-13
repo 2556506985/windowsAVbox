@@ -1,0 +1,45 @@
+# Node / frontend
+node_modules/
+dist/
+*.local
+
+# Rust / Tauri build artifacts
+target/
+gen/
+java-runtime/
+mpv/
+*.pdb
+
+# Java sidecar build output
+java-sidecar/
+java-sidecar/*.log
+**/sidecar-stderr.log
+
+# Gradle / Android
+.gradle/
+build/
+app/build/
+*.apk
+*.aab
+local.properties
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Compiled Java classes (build residue at repo root)
+com/
+org/
+np/
+*.class
+
+# Upstream TV source clone (not part of this repo)
+webhtv/
+
+# Logs
+*.log

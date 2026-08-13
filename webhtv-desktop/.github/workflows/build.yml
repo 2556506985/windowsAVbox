@@ -1,0 +1,190 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+env:
+  NODE_VERSION: "20"
+  JAVA_VERSION: "17"
+  RUST_VERSION: "stable"
+
+jobs:
+  lint-test:
+    name: Lint & Test
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cargo test
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  build-tauri:
+    name: Build Tauri App
+    needs: lint-test
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build Java sidecar
+        run: npm run java:build
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build Tauri (NSIS)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "WebHomeTV Desktop ${{ github.ref_name }}"
+          releaseBody: "See changelog for details."
+          releaseDraft: false
+          prerelease: false
+          args: --target x86_64-pc-windows-msvc
+
+  build-msi:
+    name: Build MSI (optional)
+    needs: lint-test
+    runs-on: windows-latest
+    timeout-minutes: 40
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Java sidecar
+        run: npm run java:build
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build Tauri (MSI)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "WebHomeTV Desktop ${{ github.ref_name }} (MSI)"
+          releaseBody: "MSI installer."
+          releaseDraft: false
+          prerelease: false
+          args: --target x86_64-pc-windows-msvc --bundles msi
+
+  sign:
+    name: Code Sign (requires certs)
+    needs: build-tauri
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.WINDOWS_CERT_P12 != ''
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: webhtv-desktop-*
+          merge-multiple: true
+
+      - name: Import certificate
+        run: |
+          $certPath = "cert.p12"
+          [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String("${{ secrets.WINDOWS_CERT_P12 }}"))
+          $pwd = ConvertTo-SecureString "${{ secrets.WINDOWS_CERT_PASSWORD }}" -AsPlainText -Force
+          Import-PfxCertificate -FilePath $certPath -CertStoreLocation Cert:\CurrentUser\My -Password $pwd -Exportable
+
+      - name: Sign EXE
+        run: |
+          $certThumb = (Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.Subject -like "*${{ secrets.WINDOWS_CERT_SUBJECT }}*" } | Select-Object -First 1).Thumbprint
+          $files = Get-ChildItem *.exe
+          foreach ($f in $files) {
+            signtool sign /fd sha256 /tr http://timestamp.digicert.com /td sha256 /sha1 $certThumb $f.FullName
+          }
+
+      - name: Upload signed artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: webhtv-desktop-signed
+          path: "*.exe"

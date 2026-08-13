@@ -1,0 +1,42 @@
+{
+  "name": "webhtv-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "rust:test": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "mpv:fetch": "powershell -ExecutionPolicy Bypass -File scripts/fetch_mpv.ps1",
+    "java:fetch": "powershell -ExecutionPolicy Bypass -File scripts/fetch_java_runtime.ps1",
+    "java:build": "powershell -ExecutionPolicy Bypass -File scripts/build_java_sidecar.ps1",
+    "upstream:init": "python scripts/upstream_sync.py --init",
+    "upstream:check": "python scripts/upstream_sync.py --check",
+    "upstream:sync-assets": "python scripts/upstream_sync.py --sync-assets",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2.7.2",
+    "@types/react-window": "^1.8.8",
+    "lucide-react": "^0.468.0",
+    "qrcode": "^1.5.4",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-window": "^2.3.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^4.6.0",
+    "jsdom": "^26.1.0",
+    "typescript": "~5.8.3",
+    "vite": "^7.0.4",
+    "vitest": "^3.2.4"
+  }
+}
