@@ -77,6 +77,12 @@ final class ProxyServer implements AutoCloseable {
             long started = System.nanoTime();
             String method = params.get("method");
             String url = params.get("url");
+            System.err.println("proxy params site=" + params.get("site") + " shareId="
+                    + params.get("shareId") + " fileId=" + params.get("fileId")
+                    + " fileToken=" + (params.get("fileToken") == null ? "-" : "set")
+                    + " ua=" + (params.get("User-Agent") == null ? "-" : "set")
+                    + " cookie=" + (params.get("Cookie") == null ? "-" : "set")
+                    + " range=" + (params.get("Range") == null ? "-" : params.get("Range")));
             boolean cacheable = cacheable(method, url, params);
             boolean hit = false;
             if (cacheable) {
