@@ -2797,7 +2797,7 @@ function ConfigCenterView({ site }: { site: SiteConfig }) {
           authSessionRef.current = "";
           return;
         }
-        timer = window.setTimeout(() => void poll(), 1600);
+        timer = window.setTimeout(() => void poll(), 3000);
       } catch (nextError) {
         if (!cancelled && mountedRef.current && authSessionRef.current === sessionId) {
           setAuth((current) => current?.sessionId === sessionId ? {
@@ -2810,7 +2810,7 @@ function ConfigCenterView({ site }: { site: SiteConfig }) {
       }
     };
 
-    timer = window.setTimeout(() => void poll(), 1200);
+    timer = window.setTimeout(() => void poll(), 3000);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);

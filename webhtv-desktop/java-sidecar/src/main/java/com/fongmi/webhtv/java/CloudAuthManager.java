@@ -25,7 +25,7 @@ import okhttp3.ResponseBody;
 import org.json.JSONObject;
 
 final class CloudAuthManager {
-    private static final Duration SESSION_TTL = Duration.ofMinutes(5);
+    private static final Duration SESSION_TTL = Duration.ofMinutes(10);
     private static final int MAX_POLL_FAILURES = 5;
     private static final String QUARK_USER_AGENT =
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -593,7 +593,7 @@ final class CloudAuthManager {
     private Path credentialPath(String provider) {
         return credentialDir.resolve(switch (provider) {
             case "quark" -> "quark_cookie.txt";
-            case "uc", "uctv" -> "uc_token.txt";
+            case "uc", "uctv" -> "uc_cookie.txt";
             case "baidu" -> "baidu.txt";
             default -> throw new IllegalArgumentException("unsupported cloud provider `" + provider + "`");
         });

@@ -20,7 +20,7 @@ final class ProxyServer implements AutoCloseable {
         Object[] proxy(Map<String, String> params) throws Exception;
     }
 
-    private static final long CACHE_TTL_MS = 30_000;
+    private static final long CACHE_TTL_MS = 5 * 60 * 1000;
     private static final int CACHE_MAX_BYTES = 512 * 1024;
     private static final int CACHE_MAX_ENTRIES = 256;
     private static final int LOG_URL_MAX_CHARS = 140;
@@ -85,15 +85,16 @@ final class ProxyServer implements AutoCloseable {
                     + " range=" + (params.get("Range") == null ? "-" : params.get("Range")));
             boolean cacheable = cacheable(method, url, params);
             boolean hit = false;
+            String cacheKey = buildCacheKey(url, params);
             if (cacheable) {
-                CachedResponse cached = cache.get(url);
+                CachedResponse cached = cache.get(cacheKey);
                 if (cached != null && cached.expiresAt > System.currentTimeMillis()) {
                     hit = true;
                     sendBytes(exchange, 200, cached.body, cached.contentType);
                     log(method, url, 200, started, true);
                     return;
                 }
-                if (cached != null) cache.remove(url);
+                if (cached != null) cache.remove(cacheKey);
             }
             Object[] result = handler.proxy(params);
             if (result == null || result.length < 3 || !(result[0] instanceof Number)) {
@@ -114,7 +115,7 @@ final class ProxyServer implements AutoCloseable {
                     && !contentType.startsWith("audio/")) {
                 byte[] bytes = readAllLimited(body, CACHE_MAX_BYTES);
                 if (bytes != null) {
-                    cache.put(url, new CachedResponse(bytes, contentType, System.currentTimeMillis() + CACHE_TTL_MS));
+                    cache.put(cacheKey, new CachedResponse(bytes, contentType, System.currentTimeMillis() + CACHE_TTL_MS));
                     pruneCache();
                     log(method, url, status, started, false);
                     sendBytes(exchange, status, bytes, contentType);
@@ -260,6 +261,19 @@ final class ProxyServer implements AutoCloseable {
 
     private static boolean containsHeader(Headers headers, String name) {
         return headers.keySet().stream().anyMatch(key -> key.equalsIgnoreCase(name));
+    }
+
+    private static String buildCacheKey(String url, Map<String, String> params) {
+        StringBuilder key = new StringBuilder(url);
+        String cookie = params.get("Cookie");
+        if (cookie != null && !cookie.isEmpty()) {
+            key.append('|').append(cookie.hashCode());
+        }
+        String auth = params.get("Authorization");
+        if (auth != null && !auth.isEmpty()) {
+            key.append('|').append(auth.hashCode());
+        }
+        return key.toString();
     }
 
     private static void sendText(HttpExchange exchange, int status, String text) throws IOException {

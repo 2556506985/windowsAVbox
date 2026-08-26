@@ -74,19 +74,34 @@ function refreshStale(key: string, options: RequestOptions): void {
   refreshing.add(key);
   const execute = async (): Promise<void> => {
     try {
-      const value = await invokeSpider(options.method, options.args, options.siteKey);
-      if ((options.persistMs ?? 0) > 0) {
-        const entries = loadPersistent();
-        entries.set(key, { value, savedAt: Date.now() });
-        savePersistent(entries);
+      let attempt = 0;
+      const maxAttempts = 3;
+      while (attempt < maxAttempts) {
+        try {
+          const value = await invokeSpider(options.method, options.args, options.siteKey);
+          if ((options.persistMs ?? 0) > 0) {
+            const entries = loadPersistent();
+            entries.set(key, { value, savedAt: Date.now() });
+            savePersistent(entries);
+          }
+          CACHE.set(key, {
+            promise: Promise.resolve(value),
+            timestamp: Date.now(),
+            abortController: new AbortController(),
+          });
+          console.debug(`[SWR] refresh success key=${key} attempt=${attempt + 1}`);
+          return;
+        } catch (error) {
+          attempt++;
+          if (attempt < maxAttempts) {
+            const delay = Math.pow(2, attempt) * 1000;
+            console.warn(`[SWR] refresh failed key=${key} attempt=${attempt}/${maxAttempts}, retry in ${delay}ms:`, error);
+            await new Promise(r => setTimeout(r, delay));
+          } else {
+            console.error(`[SWR] refresh failed permanently key=${key} after ${maxAttempts} attempts:`, error);
+          }
+        }
       }
-      CACHE.set(key, {
-        promise: Promise.resolve(value),
-        timestamp: Date.now(),
-        abortController: new AbortController(),
-      });
-    } catch {
-      // refresh failed: keep serving the stale cache entry
     } finally {
       refreshing.delete(key);
     }
