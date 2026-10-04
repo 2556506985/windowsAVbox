@@ -23,7 +23,11 @@ public class Init {
     private static final HashMap<String, Boolean> keywords = new HashMap<>();
     private Application c;
     private final Handler b = new Handler(Looper.getMainLooper());
-    private final ExecutorService a = Executors.newFixedThreadPool(5);
+    private final ExecutorService a = Executors.newFixedThreadPool(5, runnable -> {
+        Thread thread = new Thread(runnable, "webhtv-init-worker");
+        thread.setDaemon(true);
+        return thread;
+    });
 
     private static class Loader {
         static final Init a = new Init();

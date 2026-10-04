@@ -43,7 +43,7 @@ final class CloudAuthManager {
     private static final String UC_TV_CLIENT_ID = "5acf882d27b74502b7040b0c65519aa7";
     private static final String UC_TV_SECRET = "l3srvtd7p42l0d0x1u8d7yc8ye9kki4d";
     private static final String UC_TV_DEVICE_MODEL = "V2238A";
-    private static final String UC_TV_EXCHANGE_URL = "http://api.extscreen.com/ucdrive/token";
+    private static final String UC_TV_EXCHANGE_URL = "https://api.extscreen.com/ucdrive/token";
 
     private final Path credentialDir;
     private final SecureRandom random = new SecureRandom();
@@ -302,10 +302,9 @@ final class CloudAuthManager {
         if (!"ok".equalsIgnoreCase(response.optString("message"))) {
             return state(session, "pending", "请使用夸克浏览器扫码并确认");
         }
-        String ticket = response.optJSONObject("data")
-                .optJSONObject("members")
-                .optString("service_ticket", "")
-                .trim();
+        JSONObject data = response.optJSONObject("data");
+        JSONObject members = data == null ? null : data.optJSONObject("members");
+        String ticket = members == null ? "" : members.optString("service_ticket", "").trim();
         if (ticket.isEmpty()) return state(session, "pending", "等待夸克确认登录");
         System.err.println("quark ticket acquired ticketLen=" + ticket.length());
 
@@ -348,10 +347,9 @@ final class CloudAuthManager {
         if (!"ok".equalsIgnoreCase(response.optString("message"))) {
             return state(session, "pending", "请使用 UC 浏览器扫码并确认");
         }
-        String ticket = response.optJSONObject("data")
-                .optJSONObject("members")
-                .optString("service_ticket", "")
-                .trim();
+        JSONObject ucData = response.optJSONObject("data");
+        JSONObject ucMembers = ucData == null ? null : ucData.optJSONObject("members");
+        String ticket = ucMembers == null ? "" : ucMembers.optString("service_ticket", "").trim();
         if (ticket.isEmpty()) return state(session, "pending", "等待 UC 确认登录");
         Headers headers = new Headers.Builder()
                 .add("Accept", "application/json, text/plain, */*")
@@ -465,7 +463,7 @@ final class CloudAuthManager {
         int status = value.optInt("status", -1);
         String confirmed = value.optString("v", "").trim();
         System.err.println("baidu unicast channel_id=" + session.token + " errno=" + errno
-                + " status=" + status + " vLen=" + confirmed.length() + " v=" + confirmed);
+                + " status=" + status + " vLen=" + confirmed.length());
         if (errno != 0) {
             return state(session, "pending", "请使用百度网盘扫码并确认");
         }
@@ -514,7 +512,8 @@ final class CloudAuthManager {
         }
         String diskCookie = cookieBuilder.toString();
         if (!diskCookie.contains("BDUSS=")) diskCookie = "BDUSS=" + realBduss;
-        System.err.println("baidu cookie=" + diskCookie);
+        System.err.println("baidu cookie len=" + diskCookie.length()
+                + " hasBDUSS=" + diskCookie.contains("BDUSS="));
         JSONObject credential = new JSONObject()
                 .put("cookie", diskCookie)
                 .put("username", username);
@@ -593,7 +592,8 @@ final class CloudAuthManager {
     private Path credentialPath(String provider) {
         return credentialDir.resolve(switch (provider) {
             case "quark" -> "quark_cookie.txt";
-            case "uc", "uctv" -> "uc_cookie.txt";
+            case "uc" -> "uc_cookie.txt";
+            case "uctv" -> "uc_tv_token.json";
             case "baidu" -> "baidu.txt";
             default -> throw new IllegalArgumentException("unsupported cloud provider `" + provider + "`");
         });
@@ -643,6 +643,12 @@ final class CloudAuthManager {
 
     private static String extractJsonString(String text, String key) {
         if (text == null) return "";
+        try {
+            Object value = new JSONObject(text.trim()).opt(key);
+            return value == null || value == JSONObject.NULL ? "" : String.valueOf(value).trim();
+        } catch (Exception ignored) {
+            // fall back to heuristic extraction for non-standard responses (JSONP/HTML shells)
+        }
         int idx = text.indexOf('"' + key + '"');
         if (idx < 0) return "";
         int colon = text.indexOf(':', idx);

@@ -21,16 +21,39 @@ fn client() -> &'static reqwest::blocking::Client {
 }
 
 pub fn start(app: &tauri::App) {
-    let Ok(server) = tiny_http::Server::http("127.0.0.1:0") else {
-        return;
-    };
-    let port = server.server_addr().to_ip().map(|addr| addr.port());
-    if let Some(port) = port {
-        app.manage(ImageProxyPort(Mutex::new(Some(port))));
-    }
+    let server = tiny_http::Server::http("127.0.0.1:0").ok();
+    let port = server
+        .as_ref()
+        .and_then(|server| server.server_addr().to_ip().map(|addr| addr.port()));
+    // Always register the state (even None) so the Tauri command never panics on a bind failure.
+    app.manage(ImageProxyPort(Mutex::new(port)));
+    let Some(server) = server else { return };
     std::thread::spawn(move || {
+        use std::sync::mpsc::{sync_channel, TrySendError};
+        let (jobs_in, jobs_out) = sync_channel::<tiny_http::Request>(128);
+        // Fixed worker pool; each worker loops on the shared queue (Mutex<Receiver> pattern).
+        let queue = std::sync::Arc::new(std::sync::Mutex::new(jobs_out));
+        for _ in 0..8 {
+            let queue = std::sync::Arc::clone(&queue);
+            std::thread::spawn(move || loop {
+                let request = {
+                    let queue = queue.lock().unwrap_or_else(|p| p.into_inner());
+                    queue.recv()
+                };
+                match request {
+                    Ok(request) => handle(request),
+                    Err(_) => return,
+                }
+            });
+        }
         for request in server.incoming_requests() {
-            let _ = std::thread::spawn(move || handle(request));
+            match jobs_in.try_send(request) {
+                Ok(()) => {}
+                Err(TrySendError::Full(request)) | Err(TrySendError::Disconnected(request)) => {
+                    let _ = request
+                        .respond(Response::from_string("image proxy busy").with_status_code(503));
+                }
+            }
         }
     });
 }

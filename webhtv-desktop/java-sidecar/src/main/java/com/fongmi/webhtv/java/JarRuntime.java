@@ -191,7 +191,7 @@ final class JarRuntime implements AutoCloseable {
         throw new IllegalArgumentException("unsupported JAR parser type " + parserType);
     }
 
-    Object invoke(Spider spider, String method, JSONArray args) throws Exception {
+    synchronized Object invoke(Spider spider, String method, JSONArray args) throws Exception {
         return switch (method) {
             case "homeContent" -> spider.homeContent(boolArg(args, 0, false));
             case "homeVideoContent" -> spider.homeVideoContent();
@@ -726,7 +726,7 @@ final class JarRuntime implements AutoCloseable {
 
     private static String rootMessage(Throwable error) {
         Throwable current = error;
-        while (current.getCause() != null) {
+        while (current.getCause() != null && current.getCause() != current) {
             current = current.getCause();
         }
         String message = current.getMessage();

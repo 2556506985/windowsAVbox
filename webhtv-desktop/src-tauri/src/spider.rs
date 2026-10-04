@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Mutex};
+use std::{collections::HashMap, sync::Mutex, time::Duration};
 
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -270,14 +270,19 @@ impl SpiderManager {
 
         let worker_site = site.clone();
         let worker_call = call.clone();
+        let worker_handle = handle.clone();
         let invocation =
-            tauri::async_runtime::spawn_blocking(move || handle.invoke(worker_site, worker_call))
+            tauri::async_runtime::spawn_blocking(move || worker_handle.invoke(worker_site, worker_call))
                 .await
                 .map_err(|error| format!("Spider invocation task failed: {error}"))?;
         let output = match invocation {
             Ok(output) => output,
             Err(error) => {
-                self.remove_handle(&key, &identity);
+                // Only drop broken runtimes for transport/process-level failures.
+                // Business errors from the site or auth timeouts must not kill the shared JVM.
+                if is_transport_failure(&error) {
+                    self.remove_handle(&key, &identity, &handle);
+                }
                 return Err(format!(
                     "site `{}` method `{}` failed: {error}",
                     site.key, call.method
@@ -303,14 +308,17 @@ impl SpiderManager {
             .ensure_runtime(config_id, &site, SpiderRuntimeKind::Java)
             .await?;
         let worker_site = site.clone();
+        let worker_handle = handle.clone();
         let invocation =
-            tauri::async_runtime::spawn_blocking(move || handle.parse(worker_site, request))
+            tauri::async_runtime::spawn_blocking(move || worker_handle.parse(worker_site, request))
                 .await
                 .map_err(|error| format!("Java parser task failed: {error}"))?;
         let output = match invocation {
             Ok(output) => output,
             Err(error) => {
-                self.remove_handle(&key, &identity);
+                if is_transport_failure(&error) {
+                    self.remove_handle(&key, &identity, &handle);
+                }
                 return Err(format!("site `{}` parser failed: {error}", site.key));
             }
         };
@@ -431,16 +439,31 @@ impl SpiderManager {
         Ok(selected)
     }
 
-    fn remove_handle(&self, key: &RuntimeKey, identity: &RuntimeIdentity) {
+    fn remove_handle(&self, key: &RuntimeKey, identity: &RuntimeIdentity, handle: &RuntimeHandle) {
         let removed = self.entries.lock().ok().and_then(|mut entries| {
             entries
                 .get(key)
-                .is_some_and(|entry| entry.identity == *identity)
+                .filter(|entry| {
+                    entry.identity == *identity && entry.handle.same_instance(handle)
+                })
+                .is_some()
                 .then(|| entries.remove(key))
                 .flatten()
         });
         if let Some(entry) = removed {
-            entry.handle.shutdown();
+            if entry.handle.same_instance(handle) {
+                entry.handle.shutdown();
+            }
+        }
+    }
+}
+
+impl RuntimeHandle {
+    fn same_instance(&self, other: &RuntimeHandle) -> bool {
+        match (self, other) {
+            (Self::QuickJs(a), Self::QuickJs(b)) => a.same_instance(b),
+            (Self::Java(a), Self::Java(b)) => a.same_instance(b),
+            _ => false,
         }
     }
 }
@@ -448,7 +471,10 @@ impl SpiderManager {
 impl RuntimeHandle {
     fn invoke(&self, site: Site, call: SpiderCall) -> Result<RawOutput, String> {
         match self {
-            Self::QuickJs(handle) => handle.invoke(call),
+            Self::QuickJs(handle) => {
+                let timeout = Duration::from_secs(site.timeout.max(5) as u64);
+                handle.invoke(call, timeout)
+            }
             Self::Java(handle) => handle.invoke(site, call),
         }
     }
@@ -519,6 +545,14 @@ pub fn runtime_kind(site: &Site) -> SpiderRuntimeKind {
     } else {
         SpiderRuntimeKind::Unsupported
     }
+}
+
+fn is_transport_failure(error: &str) -> bool {
+    error.contains("no longer available")
+        || error.contains("stopped before replying")
+        || error.contains("stopped during initialization")
+        || error.contains("timed out after")
+        || error.contains("engine is no longer running")
 }
 
 fn normalize_json(value: Option<Value>, method: &str) -> Result<Value, String> {

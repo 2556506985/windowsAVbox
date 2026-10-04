@@ -197,9 +197,14 @@ impl JavaHandle {
         self.terminate();
     }
 
+    pub(super) fn same_instance(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.child, &other.child)
+    }
+
     fn terminate(&self) {
         if let Ok(mut child) = self.child.lock() {
             let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }
@@ -430,9 +435,11 @@ impl JavaEngine {
     }
 
     fn shutdown(&self) {
-        let _ = self.request(json!({
-            "type": "shutdown"
-        }));
+        // Send a shutdown notification but do not wait for a reply — the JVM may be
+        // wedged (the usual reason shutdown happens), and waiting blocks the worker for 120s.
+        // A reply channel must exist for dispatch(), but nothing needs to receive from it.
+        let (reply, _receiver) = mpsc::channel();
+        let _ = self.dispatch(json!({ "type": "shutdown" }), reply);
         self.stop_child();
     }
 

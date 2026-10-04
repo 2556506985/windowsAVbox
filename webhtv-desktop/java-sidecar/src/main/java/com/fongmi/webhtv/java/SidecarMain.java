@@ -239,10 +239,23 @@ public final class SidecarMain {
         RUNTIMES.clear();
     }
 
+    private static final long LOG_MAX_BYTES = 8L * 1024 * 1024;
+
+    private static void rollIfTooLarge(Path path) throws java.io.IOException {
+        if (java.nio.file.Files.isRegularFile(path) && java.nio.file.Files.size(path) > LOG_MAX_BYTES) {
+            java.nio.file.Files.move(
+                    path,
+                    path.resolveSibling(path.getFileName() + ".1"),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
     private static void appendLog(Path workDir, String entry) {
         try {
+            java.nio.file.Path logPath = workDir.resolve("requests.log");
+            rollIfTooLarge(logPath);
             java.nio.file.Files.writeString(
-                    workDir.resolve("requests.log"),
+                    logPath,
                     entry + System.lineSeparator(),
                     java.nio.charset.StandardCharsets.UTF_8,
                     java.nio.file.StandardOpenOption.CREATE,
@@ -254,7 +267,7 @@ public final class SidecarMain {
 
     private static String rootMessage(Throwable error) {
         Throwable current = error;
-        while (current.getCause() != null) {
+        while (current.getCause() != null && current.getCause() != current) {
             current = current.getCause();
         }
         String message = current.getMessage();
@@ -289,6 +302,7 @@ public final class SidecarMain {
 
         private void appendToFile(byte[] buffer, int offset, int length) {
             try {
+                rollIfTooLarge(logFile);
                 java.nio.file.Files.write(
                         logFile,
                         java.util.Arrays.copyOfRange(buffer, offset, offset + length),

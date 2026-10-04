@@ -103,5 +103,19 @@ export function isNetworkError(error: unknown): boolean {
     const code = (error as { code?: string }).code;
     if (code === "ECONNREFUSED" || code === "ETIMEDOUT" || code === "ENOTFOUND") return true;
   }
+  // Tauri commands reject with plain string hints from Rust — match transient language there too.
+  if (typeof error === "string") {
+    const msg = error.toLowerCase();
+    return (
+      msg.includes("timed out") ||
+      msg.includes("timeout") ||
+      msg.includes("network") ||
+      msg.includes("failed to fetch") ||
+      msg.includes("econnrefused") ||
+      msg.includes("disconnected") ||
+      msg.includes("no longer available") ||
+      msg.includes("stopped before replying")
+    );
+  }
   return false;
 }

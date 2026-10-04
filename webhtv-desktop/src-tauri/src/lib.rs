@@ -68,6 +68,15 @@ pub fn run() {
 player::player_status,
             player::player_close,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                // Clean up child processes (Java sidecar JVMs, mpv) so app exit doesn't
+                // leave orphaned processes that hold ports/locks behind.
+                let state = app.state::<state::SharedState>();
+                state.spiders.invalidate_all();
+                state.player.close();
+            }
+        });
 }

@@ -1,6 +1,6 @@
 use std::{
     fs::{self, File},
-    io,
+    io::{self, Read},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -246,11 +246,18 @@ fn encode_market_url(raw: &str) -> Result<String, String> {
     Ok(url.to_string())
 }
 
+const MAX_MARKET_EXTRACTED_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_MARKET_ENTRIES: usize = 20_000;
+
 fn unzip(archive_path: &Path, destination: &Path) -> Result<(), String> {
     let file = File::open(archive_path)
         .map_err(|error| format!("unable to open the local package: {error}"))?;
     let mut archive =
         zip::ZipArchive::new(file).map_err(|error| format!("unable to read the local package: {error}"))?;
+    if archive.len() > MAX_MARKET_ENTRIES {
+        return Err("the local package contains too many entries".to_string());
+    }
+    let mut total_bytes = 0u64;
     for index in 0..archive.len() {
         let mut entry = archive
             .by_index(index)
@@ -270,8 +277,17 @@ fn unzip(archive_path: &Path, destination: &Path) -> Result<(), String> {
         }
         let mut output = File::create(&target)
             .map_err(|error| format!("unable to write a package file: {error}"))?;
-        io::copy(&mut entry, &mut output)
+        // ZIP-bomb guard: stop writing a single entry once it passes the remaining budget.
+        let remaining = MAX_MARKET_EXTRACTED_BYTES.saturating_sub(total_bytes);
+        if remaining == 0 {
+            return Err("the local package is too large after extraction".to_string());
+        }
+        let written = io::copy(&mut entry.by_ref().take(remaining), &mut output)
             .map_err(|error| format!("unable to extract a package file: {error}"))?;
+        total_bytes += written;
+        if written >= remaining && entry.size() > written {
+            return Err("the local package is too large after extraction".to_string());
+        }
     }
     Ok(())
 }

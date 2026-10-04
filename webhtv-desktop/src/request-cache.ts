@@ -64,6 +64,9 @@ let runningNormal = 0;
 const queueHigh: Array<() => void> = [];
 const queueNormal: Array<() => void> = [];
 const refreshing = new Set<string>();
+// Throttle: don't trigger another background refresh within N ms of the last one.
+const lastRefreshAt = new Map<string, number>();
+const REFRESH_THROTTLE_MS = 60 * 1000;
 
 function cacheKey(options: RequestOptions): string {
   return `${options.siteKey || "default"}:${options.method}:${JSON.stringify(options.args)}`;
@@ -71,7 +74,10 @@ function cacheKey(options: RequestOptions): string {
 
 function refreshStale(key: string, options: RequestOptions): void {
   if (refreshing.has(key)) return;
+  const last = lastRefreshAt.get(key) ?? 0;
+  if (Date.now() - last < REFRESH_THROTTLE_MS) return;
   refreshing.add(key);
+  lastRefreshAt.set(key, Date.now());
   const execute = async (): Promise<void> => {
     try {
       let attempt = 0;

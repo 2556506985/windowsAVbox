@@ -23,6 +23,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
+const PLAYER_REPLY_TIMEOUT: Duration = Duration::from_secs(15);
+
 #[cfg(windows)]
 use windows::{
     core::w,
@@ -312,7 +314,7 @@ impl PlayerManager {
             .send(PlayerCommand::Open { request, reply })
             .map_err(|_| "player worker is no longer available".to_string())?;
         receiver
-            .recv()
+            .recv_timeout(PLAYER_REPLY_TIMEOUT)
             .map_err(|_| "player worker stopped before replying".to_string())?
     }
 
@@ -337,7 +339,7 @@ impl PlayerManager {
             self.invalidate_handle();
             return Ok(PlayerStatus::default());
         }
-        match receiver.recv() {
+        match receiver.recv_timeout(PLAYER_REPLY_TIMEOUT) {
             Ok(result) => result,
             Err(_) => {
                 self.invalidate_handle();
@@ -363,7 +365,7 @@ impl PlayerManager {
             self.invalidate_handle();
             return Ok(PlayerStatus::default());
         }
-        match receiver.recv() {
+        match receiver.recv_timeout(PLAYER_REPLY_TIMEOUT) {
             Ok(result) => result,
             Err(_) => {
                 self.invalidate_handle();
@@ -572,7 +574,8 @@ impl PlayerHandle {
 
     fn is_alive(&self) -> bool {
         let (reply, receiver) = mpsc::channel();
-        self.sender.send(PlayerCommand::Status { reply }).is_ok() && receiver.recv().is_ok()
+        self.sender.send(PlayerCommand::Status { reply }).is_ok()
+            && receiver.recv_timeout(PLAYER_REPLY_TIMEOUT).is_ok()
     }
 }
 
@@ -1762,6 +1765,10 @@ async fn sniff_webview(
             })
             .is_err()
         {
+            let _ = tauri::async_runtime::spawn_blocking(|| {
+                thread::sleep(Duration::from_millis(200));
+            })
+            .await;
             continue;
         }
         let probe = tauri::async_runtime::spawn_blocking(move || {
@@ -1777,8 +1784,9 @@ async fn sniff_webview(
         }
         if let Some(probe) = probe {
             for candidate in browser_probe_urls(&probe) {
+                // Skip only candidates that are provably NOT media AND not media-looking by URL.
                 if !media_response(client, &candidate, &request.headers).await
-                    && is_media_url(&candidate)
+                    && !is_media_url(&candidate)
                 {
                     continue;
                 }
@@ -1998,11 +2006,14 @@ fn progress_cache_key(site_key: &str, vod_id: &str, episode_url: &str) -> Result
 }
 
 #[tauri::command]
-pub fn player_open(
+pub async fn player_open(
     request: PlayerOpenRequest,
     state: State<'_, SharedState>,
 ) -> Result<PlayerStatus, String> {
-    state.player.open(request)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.player.open(request))
+        .await
+        .map_err(|error| format!("player open task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -2059,21 +2070,29 @@ pub fn player_surface_detach(state: State<'_, SharedState>) -> Result<(), String
 }
 
 #[tauri::command]
-pub fn player_control(
+pub async fn player_control(
     request: PlayerControlRequest,
     state: State<'_, SharedState>,
 ) -> Result<PlayerStatus, String> {
-    state.player.control(request)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.player.control(request))
+        .await
+        .map_err(|error| format!("player control task failed: {error}"))?
 }
 
 #[tauri::command]
-pub fn player_status(state: State<'_, SharedState>) -> Result<PlayerStatus, String> {
-    state.player.status()
+pub async fn player_status(state: State<'_, SharedState>) -> Result<PlayerStatus, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.player.status())
+        .await
+        .map_err(|error| format!("player status task failed: {error}"))?
 }
 
 #[tauri::command]
-pub fn player_close(state: State<'_, SharedState>) {
-    state.player.close();
+pub async fn player_close(state: State<'_, SharedState>) -> Result<(), String> {
+    let state = state.inner().clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || state.player.close()).await;
+    Ok(())
 }
 
 #[cfg(test)]

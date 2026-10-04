@@ -73,11 +73,19 @@ pub fn bridge_inline_result(
     payload: String,
     state: State<'_, SharedState>,
 ) -> Result<(), String> {
-    state
+    const MAX_INLINE_RESULTS: usize = 256;
+    let mut store = state
         .inline_results
         .lock()
-        .map_err(|_| "inline result store is unavailable".to_string())?
-        .insert(id, payload);
+        .map_err(|_| "inline result store is unavailable".to_string())?;
+    // Bound the in-memory store: no consumer exists for these entries yet, so evict
+    // an arbitrary entry when the cap is reached to prevent unbounded growth.
+    if store.len() >= MAX_INLINE_RESULTS {
+        if let Some(oldest) = store.keys().next().cloned() {
+            store.remove(&oldest);
+        }
+    }
+    store.insert(id, payload);
     Ok(())
 }
 
@@ -251,10 +259,12 @@ fn cache_key(payload: &Value) -> Result<String, String> {
         .get("rule")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    // Use NUL as separator (consistent with progress_cache_key) to avoid ambiguity when
+    // either segment itself contains underscores.
     Ok(if rule.is_empty() {
         format!("cache_{key}")
     } else {
-        format!("cache_{rule}_{key}")
+        format!("cache_{rule}\0{key}")
     })
 }
 

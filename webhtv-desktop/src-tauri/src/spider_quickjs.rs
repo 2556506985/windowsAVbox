@@ -3,7 +3,7 @@ use std::{
     io::Read,
     sync::{
         mpsc::{self, SyncSender},
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
     },
     thread,
     time::{Duration, Instant},
@@ -128,6 +128,7 @@ pub(super) struct QuickJsSpec {
 #[derive(Clone)]
 pub(super) struct QuickJsHandle {
     sender: SyncSender<WorkerCommand>,
+    token: Arc<()>,
 }
 
 enum WorkerCommand {
@@ -219,21 +220,28 @@ impl QuickJsHandle {
         ready_receiver
             .recv()
             .map_err(|_| "QuickJS worker stopped during initialization".to_string())??;
-        Ok(Self { sender })
+        Ok(Self {
+            sender,
+            token: Arc::new(()),
+        })
     }
 
-    pub(super) fn invoke(&self, call: SpiderCall) -> Result<RawOutput, String> {
+    pub(super) fn invoke(&self, call: SpiderCall, timeout: Duration) -> Result<RawOutput, String> {
         let (reply, receiver) = mpsc::channel();
         self.sender
             .send(WorkerCommand::Invoke { call, reply })
             .map_err(|_| "QuickJS worker is no longer available".to_string())?;
         receiver
-            .recv()
-            .map_err(|_| "QuickJS worker stopped before replying".to_string())?
+            .recv_timeout(timeout + Duration::from_secs(30))
+            .map_err(|_| "QuickJS worker stopped before replying in time".to_string())?
     }
 
     pub(super) fn shutdown(&self) {
         let _ = self.sender.try_send(WorkerCommand::Shutdown);
+    }
+
+    pub(super) fn same_instance(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.token, &other.token)
     }
 }
 
@@ -474,6 +482,27 @@ fn host_http(url: String, options: String) -> String {
         .unwrap_or_else(|_| r#"{"code":"","headers":{},"content":""}"#.to_string())
 }
 
+fn http_client_cached(follow_redirects: bool) -> Result<&'static Client, String> {
+    static FOLLOW: OnceLock<Result<Client, String>> = OnceLock::new();
+    static NO_FOLLOW: OnceLock<Result<Client, String>> = OnceLock::new();
+    let slot = if follow_redirects { &FOLLOW } else { &NO_FOLLOW };
+    let policy = if follow_redirects {
+        Policy::limited(10)
+    } else {
+        Policy::none()
+    };
+    match slot.get_or_init(|| {
+        Client::builder()
+            .user_agent(concat!("WebHomeTV-Desktop/", env!("CARGO_PKG_VERSION")))
+            .redirect(policy)
+            .build()
+            .map_err(|error| error.to_string())
+    }) {
+        Ok(client) => Ok(client),
+        Err(error) => Err(format!("unable to initialize HTTP request: {error}")),
+    }
+}
+
 fn execute_http(url: &str, options: &str) -> Result<Value, String> {
     let url = Url::parse(url).map_err(|_| "invalid request URL".to_string())?;
     if !matches!(url.scheme(), "http" | "https") {
@@ -481,17 +510,8 @@ fn execute_http(url: &str, options: &str) -> Result<Value, String> {
     }
     let options: HttpOptions = serde_json::from_str(options).unwrap_or_default();
     let timeout = Duration::from_millis(options.timeout.unwrap_or(10_000).clamp(100, 30_000));
-    let redirect = if options.redirect.unwrap_or(1) == 1 {
-        Policy::limited(10)
-    } else {
-        Policy::none()
-    };
-    let client = Client::builder()
-        .user_agent(concat!("WebHomeTV-Desktop/", env!("CARGO_PKG_VERSION")))
-        .timeout(timeout)
-        .redirect(redirect)
-        .build()
-        .map_err(|error| format!("unable to initialize HTTP request: {error}"))?;
+    let follow_redirects = options.redirect.unwrap_or(1) == 1;
+    let client = http_client_cached(follow_redirects)?;
 
     let method = options
         .method
@@ -503,6 +523,8 @@ fn execute_http(url: &str, options: &str) -> Result<Value, String> {
         "header" | "head" => client.head(url),
         _ => client.get(url),
     };
+    // Per-request timeout overrides the client's default.
+    request = request.timeout(timeout);
     for (name, value) in &options.headers {
         let name = HeaderName::from_bytes(name.as_bytes())
             .map_err(|_| "request contains an invalid header name".to_string())?;

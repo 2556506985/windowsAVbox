@@ -83,10 +83,11 @@ final class ProxyServer implements AutoCloseable {
                     + " ua=" + (params.get("User-Agent") == null ? "-" : "set")
                     + " cookie=" + (params.get("Cookie") == null ? "-" : "set")
                     + " range=" + (params.get("Range") == null ? "-" : params.get("Range")));
-            boolean cacheable = cacheable(method, url, params);
+            boolean clientRanged = exchange.getRequestHeaders().getFirst("Range") != null;
+            boolean cacheable = !clientRanged && cacheable(method, url);
             boolean hit = false;
-            String cacheKey = buildCacheKey(url, params);
             if (cacheable) {
+                String cacheKey = buildCacheKey(url, params);
                 CachedResponse cached = cache.get(cacheKey);
                 if (cached != null && cached.expiresAt > System.currentTimeMillis()) {
                     hit = true;
@@ -113,16 +114,45 @@ final class ProxyServer implements AutoCloseable {
             if (cacheable && status == 200
                     && !contentType.startsWith("video/")
                     && !contentType.startsWith("audio/")) {
-                byte[] bytes = readAllLimited(body, CACHE_MAX_BYTES);
-                if (bytes != null) {
+                String cacheKey = buildCacheKey(url, params);
+                ByteArrayOutputStream buffer = new ByteArrayOutputStream(8192);
+                byte[] chunk = new byte[8192];
+                int total = 0;
+                int read;
+                boolean complete = true;
+                while ((read = body.read(chunk)) >= 0) {
+                    if (read == 0) continue;
+                    total += read;
+                    if (total > CACHE_MAX_BYTES) {
+                        complete = false;
+                        // keep the overflow chunk: trim it and continue streaming the rest below
+                        buffer.write(chunk, 0, read);
+                        break;
+                    }
+                    buffer.write(chunk, 0, read);
+                }
+                if (complete) {
+                    byte[] bytes = buffer.toByteArray();
                     cache.put(cacheKey, new CachedResponse(bytes, contentType, System.currentTimeMillis() + CACHE_TTL_MS));
                     pruneCache();
                     log(method, url, status, started, false);
                     sendBytes(exchange, status, bytes, contentType);
                     return;
                 }
+                // Over the cache limit: send headers now and stream prefix + remainder.
+                exchange.getResponseHeaders().set("Content-Type", contentType);
+                exchange.sendResponseHeaders(status, 0);
+                try (OutputStream output = exchange.getResponseBody()) {
+                    buffer.writeTo(output);
+                    while ((read = body.read(chunk)) >= 0) {
+                        if (read > 0) output.write(chunk, 0, read);
+                    }
+                }
+                log(method, url, status, started, false);
                 body.close();
                 body = null;
+                exchange.close();
+                return;
             }
             if (result.length > 3 && result[3] instanceof Map<?, ?> headers) {
                 copyHeaders(exchange.getResponseHeaders(), headers);
@@ -132,7 +162,6 @@ final class ProxyServer implements AutoCloseable {
                 responseHeaders.set("Content-Type", contentType);
             }
             boolean head = "HEAD".equalsIgnoreCase(exchange.getRequestMethod());
-            boolean clientRanged = exchange.getRequestHeaders().getFirst("Range") != null;
             boolean lacksRangeInfo = !containsHeader(responseHeaders, "Content-Range")
                     && contentLength(responseHeaders) == 0;
             if (status == 206 && clientRanged && lacksRangeInfo) {
@@ -168,7 +197,7 @@ final class ProxyServer implements AutoCloseable {
         }
     }
 
-    private static boolean cacheable(String method, String url, Map<String, String> params) {
+    private static boolean cacheable(String method, String url) {
         if (!"GET".equalsIgnoreCase(method)) return false;
         if (url == null || url.isEmpty()) return false;
         String lower = url.toLowerCase();
@@ -177,21 +206,7 @@ final class ProxyServer implements AutoCloseable {
                 || lower.contains(".m4a") || lower.contains(".mkv") || lower.contains(".webm")) {
             return false;
         }
-        return params.get("range") == null;
-    }
-
-    private static byte[] readAllLimited(InputStream input, int limit) throws IOException {
-        ByteArrayOutputStream buffer = new ByteArrayOutputStream(8192);
-        byte[] chunk = new byte[8192];
-        int total = 0;
-        int read;
-        while ((read = input.read(chunk)) >= 0) {
-            if (read == 0) continue;
-            total += read;
-            if (total > limit) return null;
-            buffer.write(chunk, 0, read);
-        }
-        return buffer.toByteArray();
+        return true;
     }
 
     private void pruneCache() {
@@ -264,14 +279,14 @@ final class ProxyServer implements AutoCloseable {
     }
 
     private static String buildCacheKey(String url, Map<String, String> params) {
-        StringBuilder key = new StringBuilder(url);
+        StringBuilder key = new StringBuilder(url == null ? "" : url);
         String cookie = params.get("Cookie");
         if (cookie != null && !cookie.isEmpty()) {
-            key.append('|').append(cookie.hashCode());
+            key.append('|').append(cookie);
         }
         String auth = params.get("Authorization");
         if (auth != null && !auth.isEmpty()) {
-            key.append('|').append(auth.hashCode());
+            key.append('|').append(auth);
         }
         return key.toString();
     }

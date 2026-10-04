@@ -16,6 +16,8 @@ export function useDebouncedCallback<T extends AnyFn>(
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastArgsRef = useRef<Parameters<T> | null>(null);
   const lastCallTimeRef = useRef<number>(0);
+  const callbackRef = useRef(callback);
+  callbackRef.current = callback;
 
   const debouncedFn = useCallback(
     ((...args: any[]) => {
@@ -26,7 +28,7 @@ export function useDebouncedCallback<T extends AnyFn>(
       const invoke = () => {
         lastCallTimeRef.current = Date.now();
         if (trailing && lastArgsRef.current) {
-          (callback as AnyFn)(...lastArgsRef.current);
+          (callbackRef.current as AnyFn)(...lastArgsRef.current);
         }
       };
 
@@ -38,7 +40,7 @@ export function useDebouncedCallback<T extends AnyFn>(
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
       timeoutRef.current = setTimeout(invoke, delay);
     }) as T,
-    [callback, delay, leading, trailing]
+    [delay, leading, trailing]
   );
 
   useEffect(() => {
