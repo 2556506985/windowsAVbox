@@ -586,8 +586,8 @@ fn normalize_json(value: Option<Value>, method: &str) -> Result<Value, String> {
             let snippet: String = text.trim().chars().take(120).collect();
             serde_json::from_str(&text).map_err(|error| {
                 format!(
-                    "Spider method `{method}` 返回了非 JSON 内容(源站可能改版或被反爬)。\
-                     响应开头: {snippet:?} · 解析错误: {error}"
+                    "Spider method `{method}` returned invalid JSON — \
+                     返回了非 JSON 内容（源站可能改版或被反爬）。响应开头: {snippet:?} · 解析错误: {error}"
                 )
             })
         }
