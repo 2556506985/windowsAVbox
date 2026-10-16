@@ -4,8 +4,8 @@ use tauri::State;
 
 use crate::{
     config::{load_config_file, load_config_url, parse_config_payload, ConfigPayload},
-    database::{ConfigDetail, ConfigSummary},
-    state::SharedState,
+    database::{ConfigDetail, ConfigSummary, ProxyConfigItem, SiteHealthItem},
+    state::{DebugLogEntry, SharedState},
 };
 
 #[tauri::command]
@@ -97,4 +97,91 @@ fn now_nanos() -> u128 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos()
+}
+
+#[tauri::command]
+pub fn proxy_list(state: State<'_, SharedState>) -> Result<Vec<ProxyConfigItem>, String> {
+    state.database.list_proxy_configs()
+}
+
+#[tauri::command]
+pub fn proxy_upsert(
+    id: Option<i64>,
+    name: String,
+    pattern: String,
+    proxy_url: String,
+    enabled: bool,
+    state: State<'_, SharedState>,
+) -> Result<i64, String> {
+    state
+        .database
+        .upsert_proxy_config(id, &name, &pattern, &proxy_url, enabled)
+}
+
+#[tauri::command]
+pub fn proxy_delete(id: i64, state: State<'_, SharedState>) -> Result<(), String> {
+    state.database.delete_proxy_config(id)
+}
+
+#[tauri::command]
+pub fn proxy_find(url: String, state: State<'_, SharedState>) -> Result<Option<String>, String> {
+    state.database.find_proxy_for_url(&url)
+}
+
+#[tauri::command]
+pub fn debug_logs_list(state: State<'_, SharedState>) -> Result<Vec<DebugLogEntry>, String> {
+    let logs = state
+        .debug_logs
+        .lock()
+        .map_err(|_| "debug log lock is unavailable".to_string())?;
+    Ok(logs.iter().rev().cloned().collect())
+}
+
+#[tauri::command]
+pub fn debug_logs_clear(state: State<'_, SharedState>) -> Result<(), String> {
+    let mut logs = state
+        .debug_logs
+        .lock()
+        .map_err(|_| "debug log lock is unavailable".to_string())?;
+    logs.clear();
+    Ok(())
+}
+
+#[tauri::command]
+pub fn debug_log_add(
+    level: String,
+    module: String,
+    message: String,
+    state: State<'_, SharedState>,
+) -> Result<(), String> {
+    state.debug_log(&level, &module, &message);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn site_health_record(
+    config_id: i64,
+    site_key: String,
+    method: String,
+    success: bool,
+    error: Option<String>,
+    state: State<'_, SharedState>,
+) -> Result<(), String> {
+    state
+        .database
+        .record_site_health(config_id, &site_key, &method, success, error.as_deref())
+}
+
+#[tauri::command]
+pub fn site_health_list(config_id: i64, state: State<'_, SharedState>) -> Result<Vec<SiteHealthItem>, String> {
+    state.database.list_site_health(config_id)
+}
+
+#[tauri::command]
+pub fn site_health_reset(
+    config_id: i64,
+    site_key: Option<String>,
+    state: State<'_, SharedState>,
+) -> Result<(), String> {
+    state.database.reset_site_health(config_id, site_key.as_deref())
 }

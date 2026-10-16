@@ -9,7 +9,7 @@ use serde::Serialize;
 
 use crate::config::{Site, VodConfigDocument};
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 4;
 
 pub struct Database {
     connection: Mutex<Connection>,
@@ -386,6 +386,213 @@ impl Database {
         Ok(())
     }
 
+    pub fn record_site_health(
+        &self,
+        config_id: i64,
+        site_key: &str,
+        method: &str,
+        success: bool,
+        error: Option<&str>,
+    ) -> Result<(), String> {
+        let site_key = site_key.trim();
+        let method = method.trim();
+        if site_key.is_empty() || method.is_empty() {
+            return Err("site key and method cannot be empty".to_string());
+        }
+        let now = now_millis();
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database is unavailable".to_string())?;
+        let transaction = connection.transaction().map_err(database_error)?;
+        let exists: bool = transaction
+            .query_row(
+                "SELECT 1 FROM site_health WHERE config_id = ?1 AND site_key = ?2 AND method = ?3",
+                params![config_id, site_key, method],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(database_error)?
+            .is_some();
+        if exists {
+            if success {
+                transaction
+                    .execute(
+                        "UPDATE site_health SET success_count = success_count + 1, last_success_at = ?1, updated_at = ?1 WHERE config_id = ?2 AND site_key = ?3 AND method = ?4",
+                        params![now, config_id, site_key, method],
+                    )
+                    .map_err(database_error)?;
+            } else {
+                transaction
+                    .execute(
+                        "UPDATE site_health SET failure_count = failure_count + 1, last_failure_at = ?1, last_error = ?2, updated_at = ?1 WHERE config_id = ?3 AND site_key = ?4 AND method = ?5",
+                        params![now, error.unwrap_or(""), config_id, site_key, method],
+                    )
+                    .map_err(database_error)?;
+            }
+        } else {
+            transaction
+                .execute(
+                    "INSERT INTO site_health (config_id, site_key, method, success_count, failure_count, last_success_at, last_failure_at, last_error, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![
+                        config_id,
+                        site_key,
+                        method,
+                        if success { 1 } else { 0 },
+                        if success { 0 } else { 1 },
+                        if success { Some(now) } else { None },
+                        if success { None } else { Some(now) },
+                        error.unwrap_or(""),
+                        now,
+                    ],
+                )
+                .map_err(database_error)?;
+        }
+        transaction.commit().map_err(database_error)?;
+        Ok(())
+    }
+
+    pub fn list_site_health(&self, config_id: i64) -> Result<Vec<SiteHealthItem>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database is unavailable".to_string())?;
+        let mut statement = connection.prepare(
+            "SELECT site_key, method, success_count, failure_count, last_success_at, last_failure_at, last_error, updated_at
+             FROM site_health
+             WHERE config_id = ?1
+             ORDER BY updated_at DESC",
+        )
+        .map_err(database_error)?;
+        let rows = statement.query_map([config_id], site_health_from_row).map_err(database_error)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(database_error)
+    }
+
+    pub fn reset_site_health(&self, config_id: i64, site_key: Option<&str>) -> Result<(), String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database is unavailable".to_string())?;
+        match site_key {
+            Some(key) => {
+                let key = key.trim();
+                connection
+                    .execute(
+                        "DELETE FROM site_health WHERE config_id = ?1 AND site_key = ?2",
+                        params![config_id, key],
+                    )
+                    .map_err(database_error)?;
+            }
+            None => {
+                connection
+                    .execute("DELETE FROM site_health WHERE config_id = ?1", [config_id])
+                    .map_err(database_error)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn list_proxy_configs(&self) -> Result<Vec<ProxyConfigItem>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database is unavailable".to_string())?;
+        let mut statement = connection.prepare(
+            "SELECT id, name, pattern, proxy_url, enabled, updated_at
+             FROM proxy_configs
+             ORDER BY updated_at DESC",
+        )
+        .map_err(database_error)?;
+        let rows = statement.query_map([], proxy_config_from_row).map_err(database_error)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(database_error)
+    }
+
+    pub fn upsert_proxy_config(
+        &self,
+        id: Option<i64>,
+        name: &str,
+        pattern: &str,
+        proxy_url: &str,
+        enabled: bool,
+    ) -> Result<i64, String> {
+        let name = name.trim();
+        let pattern = pattern.trim();
+        let proxy_url = proxy_url.trim();
+        if pattern.is_empty() || proxy_url.is_empty() {
+            return Err("pattern and proxy_url cannot be empty".to_string());
+        }
+        let now = now_millis();
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database is unavailable".to_string())?;
+        let id = match id {
+            Some(id) => {
+                connection
+                    .execute(
+                        "UPDATE proxy_configs SET name = ?1, pattern = ?2, proxy_url = ?3, enabled = ?4, updated_at = ?5 WHERE id = ?6",
+                        params![name, pattern, proxy_url, i64::from(enabled), now, id],
+                    )
+                    .map_err(database_error)?;
+                id
+            }
+            None => {
+                connection
+                    .execute(
+                        "INSERT INTO proxy_configs (name, pattern, proxy_url, enabled, updated_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![name, pattern, proxy_url, i64::from(enabled), now],
+                    )
+                    .map_err(database_error)?;
+                    connection
+                        .query_row("SELECT last_insert_rowid()", [], |row| row.get(0))
+                        .map_err(database_error)?
+            }
+        };
+        Ok(id)
+    }
+
+    pub fn delete_proxy_config(&self, id: i64) -> Result<(), String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database is unavailable".to_string())?;
+        let changed = connection
+            .execute("DELETE FROM proxy_configs WHERE id = ?1", [id])
+            .map_err(database_error)?;
+        if changed == 0 {
+            return Err(format!("proxy config {id} was not found"));
+        }
+        Ok(())
+    }
+
+    pub fn find_proxy_for_url(&self, url: &str) -> Result<Option<String>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database is unavailable".to_string())?;
+        let mut statement = connection.prepare(
+            "SELECT proxy_url FROM proxy_configs
+             WHERE enabled = 1
+             ORDER BY updated_at DESC
+             LIMIT 50",
+        )
+        .map_err(database_error)?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(database_error)?;
+        let configs: Vec<String> = rows.collect::<Result<Vec<_>, _>>().map_err(database_error)?;
+        for proxy_url in configs {
+            // Simple substring match: if the URL contains the proxy_url pattern, use it
+            // This allows matching domain patterns like "example.com"
+            if url.contains(&proxy_url) {
+                return Ok(Some(proxy_url));
+            }
+        }
+        Ok(None)
+    }
+
     fn list_library(&self, table: &str) -> Result<Vec<LibraryItem>, String> {
         let sql = format!(
             "SELECT id, site_key, site_name, vod_id, vod_name, vod_pic, vod_remarks, updated_at
@@ -474,6 +681,66 @@ pub struct LibraryInput {
     pub vod_remarks: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SiteHealthItem {
+    pub site_key: String,
+    pub method: String,
+    pub success_count: i64,
+    pub failure_count: i64,
+    pub last_success_at: Option<i64>,
+    pub last_failure_at: Option<i64>,
+    pub last_error: String,
+    pub updated_at: i64,
+    pub success_rate: f64,
+    pub total: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyConfigItem {
+    pub id: i64,
+    pub name: String,
+    pub pattern: String,
+    pub proxy_url: String,
+    pub enabled: bool,
+    pub updated_at: i64,
+}
+
+fn proxy_config_from_row(row: &Row<'_>) -> rusqlite::Result<ProxyConfigItem> {
+    Ok(ProxyConfigItem {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        pattern: row.get(2)?,
+        proxy_url: row.get(3)?,
+        enabled: row.get::<_, i64>(4)? == 1,
+        updated_at: row.get(5)?,
+    })
+}
+
+fn site_health_from_row(row: &Row<'_>) -> rusqlite::Result<SiteHealthItem> {
+    let success_count: i64 = row.get(2)?;
+    let failure_count: i64 = row.get(3)?;
+    let total = success_count + failure_count;
+    let success_rate = if total > 0 {
+        success_count as f64 / total as f64 * 100.0
+    } else {
+        0.0
+    };
+    Ok(SiteHealthItem {
+        site_key: row.get(0)?,
+        method: row.get(1)?,
+        success_count,
+        failure_count,
+        last_success_at: row.get(4)?,
+        last_failure_at: row.get(5)?,
+        last_error: row.get(6)?,
+        updated_at: row.get(7)?,
+        success_rate,
+        total,
+    })
+}
+
 fn migrate(connection: &Connection) -> Result<(), String> {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -522,31 +789,73 @@ fn migrate(connection: &Connection) -> Result<(), String> {
             .execute_batch(
                 "BEGIN;
                  CREATE TABLE IF NOT EXISTS keeps (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    site_key TEXT NOT NULL,
-                    site_name TEXT NOT NULL DEFAULT '',
-                    vod_id TEXT NOT NULL,
-                    vod_name TEXT NOT NULL DEFAULT '',
-                    vod_pic TEXT NOT NULL DEFAULT '',
-                    vod_remarks TEXT NOT NULL DEFAULT '',
-                    updated_at INTEGER NOT NULL,
-                    UNIQUE(site_key, vod_id)
-                 );
-                 CREATE INDEX IF NOT EXISTS keeps_updated_idx ON keeps(updated_at DESC);
-                 CREATE TABLE IF NOT EXISTS history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    site_key TEXT NOT NULL,
-                    site_name TEXT NOT NULL DEFAULT '',
-                    vod_id TEXT NOT NULL,
-                    vod_name TEXT NOT NULL DEFAULT '',
-                    vod_pic TEXT NOT NULL DEFAULT '',
-                    vod_remarks TEXT NOT NULL DEFAULT '',
-                    updated_at INTEGER NOT NULL,
-                    UNIQUE(site_key, vod_id)
-                 );
-                 CREATE INDEX IF NOT EXISTS history_updated_idx ON history(updated_at DESC);
-                 PRAGMA user_version = 2;
-                 COMMIT;",
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     site_key TEXT NOT NULL,
+                     site_name TEXT NOT NULL DEFAULT '',
+                     vod_id TEXT NOT NULL,
+                     vod_name TEXT NOT NULL DEFAULT '',
+                     vod_pic TEXT NOT NULL DEFAULT '',
+                     vod_remarks TEXT NOT NULL DEFAULT '',
+                     updated_at INTEGER NOT NULL,
+                     UNIQUE(site_key, vod_id)
+                  );
+                  CREATE INDEX IF NOT EXISTS keeps_updated_idx ON keeps(updated_at DESC);
+                  CREATE TABLE IF NOT EXISTS history (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     site_key TEXT NOT NULL,
+                     site_name TEXT NOT NULL DEFAULT '',
+                     vod_id TEXT NOT NULL,
+                     vod_name TEXT NOT NULL DEFAULT '',
+                     vod_pic TEXT NOT NULL DEFAULT '',
+                     vod_remarks TEXT NOT NULL DEFAULT '',
+                     updated_at INTEGER NOT NULL,
+                     UNIQUE(site_key, vod_id)
+                  );
+                  CREATE INDEX IF NOT EXISTS history_updated_idx ON history(updated_at DESC);
+                  PRAGMA user_version = 2;
+                  COMMIT;",
+            )
+            .map_err(database_error)?;
+    }
+    if version < 3 {
+        connection
+            .execute_batch(
+                "BEGIN;
+                 CREATE TABLE IF NOT EXISTS site_health (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     config_id INTEGER NOT NULL,
+                     site_key TEXT NOT NULL,
+                     method TEXT NOT NULL,
+                     success_count INTEGER NOT NULL DEFAULT 0,
+                     failure_count INTEGER NOT NULL DEFAULT 0,
+                     last_success_at INTEGER,
+                     last_failure_at INTEGER,
+                     last_error TEXT,
+                     updated_at INTEGER NOT NULL,
+                     UNIQUE(config_id, site_key, method)
+                  );
+                  CREATE INDEX IF NOT EXISTS site_health_config_idx ON site_health(config_id);
+                  CREATE INDEX IF NOT EXISTS site_health_updated_idx ON site_health(updated_at DESC);
+                  PRAGMA user_version = 3;
+                  COMMIT;",
+            )
+            .map_err(database_error)?;
+    }
+    if version < 4 {
+        connection
+            .execute_batch(
+                "BEGIN;
+                 CREATE TABLE IF NOT EXISTS proxy_configs (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     name TEXT NOT NULL DEFAULT '',
+                     pattern TEXT NOT NULL,
+                     proxy_url TEXT NOT NULL,
+                     enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+                     updated_at INTEGER NOT NULL
+                  );
+                  CREATE INDEX IF NOT EXISTS proxy_configs_pattern_idx ON proxy_configs(pattern);
+                  PRAGMA user_version = 4;
+                  COMMIT;",
             )
             .map_err(database_error)?;
     }

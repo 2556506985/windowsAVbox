@@ -1,7 +1,9 @@
 use serde_json::{Map, Value};
 use tauri::State;
 
-use crate::{config::Site, spider::SpiderCall, state::SharedState};
+use crate::{
+    config::Site, spider::SpiderCall, state::SharedState,
+};
 
 #[tauri::command]
 pub async fn spider_invoke(
@@ -21,7 +23,30 @@ pub async fn spider_invoke(
         active.summary.home_key.as_str(),
         site_key,
     )?;
-    state.spiders.invoke(active.summary.id, site, call).await
+    let config_id = active.summary.id;
+    let site_key_owned = site.key.clone();
+    let result = state.spiders.invoke(config_id, site, call).await;
+    let (success, error) = match &result {
+        Ok(_) => (true, None),
+        Err(e) => (false, Some(e.clone())),
+    };
+    let _ = state
+        .database
+        .record_site_health(config_id, &site_key_owned, &method, success, error.as_deref());
+    if let Some(ref err) = error {
+        state.debug_log(
+            "error",
+            "spider",
+            &format!("{}::{}: {}", site_key_owned, method, err),
+        );
+    } else {
+        state.debug_log(
+            "debug",
+            "spider",
+            &format!("{}::{}: ok", site_key_owned, method),
+        );
+    }
+    result
 }
 
 fn resolve_site(sites: &[Site], home_key: &str, requested: Option<String>) -> Result<Site, String> {
