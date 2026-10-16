@@ -489,22 +489,26 @@ impl PlayerManager {
         }
     }
 
-    fn close_external(&self) {
-        let pid = self.external.lock().ok().and_then(|external| *external);
-        if let Some(pid) = pid {
+fn close_external(&self) {
+    let pid = self.external.lock().ok().and_then(|external| *external);
+    if let Some(pid) = pid {
+        // PID may have been recycled by the OS after mpv exited; only kill the
+        // process we actually started.
+        if process_is_running(pid) {
             let _ = std::process::Command::new("taskkill")
                 .args(["/PID", &pid.to_string(), "/T", "/F"])
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .spawn();
-            if let Ok(mut current) = self.external.lock() {
-                *current = None;
-            }
         }
-        if let Ok(mut current) = self.external_ipc.lock() {
+        if let Ok(mut current) = self.external.lock() {
             *current = None;
         }
     }
+    if let Ok(mut current) = self.external_ipc.lock() {
+        *current = None;
+    }
+}
 
     fn ensure_handle(&self) -> Result<PlayerHandle, String> {
         let mut current = self
