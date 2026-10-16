@@ -284,8 +284,10 @@ impl SpiderManager {
                     self.remove_handle(&key, &identity, &handle);
                 }
                 return Err(format!(
-                    "site `{}` method `{}` failed: {error}",
-                    site.key, call.method
+                    "site `{}` method `{}` failed: {}",
+                    site.key,
+                    call.method,
+                    friendly_spider_error(&error)
                 ));
             }
         };
@@ -555,12 +557,40 @@ fn is_transport_failure(error: &str) -> bool {
         || error.contains("engine is no longer running")
 }
 
+/// Translate Java-side spider error hints into actionable user messages.
+fn friendly_spider_error(error: &str) -> String {
+    let trimmed = error.trim();
+    if trimmed.contains("JSONException") || trimmed.contains("must begin with '{'") {
+        return format!(
+            "站点返回的内容无法解析为 JSON（JSONException），通常是源站改版、需要登录，或网络被拦截。\
+             底层错误: {trimmed}"
+        );
+    }
+    if trimmed.contains("SocketTimeoutException") || trimmed.contains("Connect timed out") {
+        return format!("源站连接超时，请检查网络或稍后重试。底层错误: {trimmed}");
+    }
+    if trimmed.contains("SSLHandshakeException") || trimmed.contains("certificate_unknown") {
+        return format!("源站证书异常，可能被中间代理劫持。底层错误: {trimmed}");
+    }
+    if trimmed.contains("UnknownHostException") {
+        return format!("源站域名解析失败，站点可能已关闭或域名已更换。底层错误: {trimmed}");
+    }
+    trimmed.to_string()
+}
+
 fn normalize_json(value: Option<Value>, method: &str) -> Result<Value, String> {
     match value {
         None | Some(Value::Null) => Ok(Value::Object(Map::new())),
         Some(Value::String(text)) if text.trim().is_empty() => Ok(Value::Object(Map::new())),
-        Some(Value::String(text)) => serde_json::from_str(&text)
-            .map_err(|error| format!("Spider method `{method}` returned invalid JSON: {error}")),
+        Some(Value::String(text)) => {
+            let snippet: String = text.trim().chars().take(120).collect();
+            serde_json::from_str(&text).map_err(|error| {
+                format!(
+                    "Spider method `{method}` 返回了非 JSON 内容(源站可能改版或被反爬)。\
+                     响应开头: {snippet:?} · 解析错误: {error}"
+                )
+            })
+        }
         Some(value @ (Value::Object(_) | Value::Array(_))) => Ok(value),
         Some(other) => Err(format!(
             "Spider method `{method}` returned {}, expected JSON text or a JSON value",
